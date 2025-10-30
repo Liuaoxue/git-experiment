@@ -51,10 +51,24 @@ class HeteroDotProductPredictor(nn.Module):
             logits_2 = torch.relu(logits)
             return logits_2
 
+def _get_coo_adj(g, etype):
+    if hasattr(g, "adj"):
+        try:
+            return g.adj(etype=etype, scipy_fmt='coo')
+        except TypeError:
+            pass
+    if hasattr(g, "adj_external"):
+        try:
+            return g.adj_external(etype=etype, scipy_fmt='coo')
+        except AttributeError:
+            pass
+    if hasattr(g, "adjacency_matrix"):
+        return g.adjacency_matrix(etype=etype, scipy_fmt='coo')
+    raise AttributeError("当前 DGL 版本缺少可用的邻接矩阵导出接口，请升级 DGL。")
+
+
 def contrastive_loss(user_emb,g):
-    # adj_friend=g.adj(scipy_fmt='coo',etype='friend')
-    adj_friend = g.adj_external(scipy_fmt='coo',etype='friend' )  # for dgl >1.0.x , use adj_external()
-    adj_friend=adj_friend.todense()
+    adj_friend = _get_coo_adj(g, 'friend').todense()
     row,col=np.diag_indices_from(adj_friend)
     adj_friend[row,col]=1
     # a=torch.norm(user_emb[0],dim=-1,keepdim=True)

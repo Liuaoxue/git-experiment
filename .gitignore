@@ -1,2 +1,7 @@
 
 /.idea
+__pycache__/
+*.zip
+output/
+.ipynb_checkpoints/
+data/save_user_embedding/
