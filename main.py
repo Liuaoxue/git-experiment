@@ -14,6 +14,7 @@ from torch import cosine_similarity
 from dataset import *
 from model import *
 from utils import *
+from datetime import datetime
 
 from config import *
 args=parse()
@@ -27,7 +28,8 @@ K=args.multihead
 lambda_1=args.lambda_1
 lambda_2=args.lambda_2
 lambda_3=args.lambda_3
-file='output/'+str(city)+'_multi_head_'+str(K)+'lambda_1_'+str(lambda_1)+'lambda_2_'+str(lambda_2)+'lambda_3_'+str(lambda_3)+'.txt'
+timestamp = datetime.now().strftime('%Y-%m-%d_%H-%M-%S')
+file='output/'+str(city)+'_multi_head_'+str(K)+'lambda_1_'+str(lambda_1)+'lambda_2_'+str(lambda_2)+'lambda_3_'+str(lambda_3)+'_' + timestamp + '.txt'
 print(file)
 if __name__ == '__main__':
 

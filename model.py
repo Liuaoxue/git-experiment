@@ -236,6 +236,20 @@ class HMGNN(nn.Module):
         self.conv2 = HeteroGraph({
             rel: Edge_level(hid_feats * num_heads, out_feats, num_heads=num_heads, )
             for rel in rel_names}, in_size_sem=out_feats, num_head=num_heads)
+
+        # --- Transformer Encoder Layer ---
+        encoder_layer = nn.TransformerEncoderLayer(
+            d_model=out_feats * num_heads, 
+            nhead=num_heads,
+            dim_feedforward=hid_feats * num_heads,
+            batch_first=True
+        )
+        self.transformer_encoders = nn.ModuleDict({
+            'user': nn.TransformerEncoder(encoder_layer, num_layers=1),
+            'poi': nn.TransformerEncoder(encoder_layer, num_layers=1)
+        })
+        # ---------------------------------
+
         self.lin = nn.Linear(out_feats * num_heads, out_feats)
         self.lin2 = nn.Linear(out_feats, out_feats)
         self.relu = nn.ReLU()
@@ -247,6 +261,15 @@ class HMGNN(nn.Module):
         h = self.conv2(graph, h, edge_attr)
         h = {k: v.reshape(v.shape[0], -1) for k, v in h.items()}
         h = {k: F.relu(v) for k, v in h.items()}
+        
+        # Apply Transformer Encoder to each node type
+        for ntype, emb in h.items():
+            if ntype in self.transformer_encoders:
+                # TransformerEncoder expects [seq_len, batch_size, embedding_dim]
+                # but with batch_first=True, it's [batch_size, seq_len, embedding_dim]
+                # We treat nodes as sequence and batch size as 1
+                h[ntype] = self.transformer_encoders[ntype](emb.unsqueeze(0)).squeeze(0)
+
         h = {k: self.lin(v) for k, v in h.items()}
         h = {k: self.lin2(v) for k, v in h.items()}
         return h
