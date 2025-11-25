@@ -80,7 +80,7 @@ if __name__ == '__main__':
             if ap > best_ap:
                 best_ap = ap
                 print("beat_ap:", ap)
-            need_write="epoch"+str(epoch)+" best_auc: "+str(best_auc)+" best_ap: "+str(best_ap)
+            need_write="epoch"+str(epoch)+" best_auc: "+str(best_auc)+" best_ap: "+str(best_ap)+" loss: "+str(loss.item())
             top='top_1+'+str(top_k[0])+' top_5+'+str(top_k[1])+' top_10+'+str(top_k[2])+' top_15+'+str(top_k[3])+' top_20+'+str(top_k[4])
             with open(file, 'a+') as f:
                 f.write(need_write + '\n')  # 加\n换行显示
@@ -95,7 +95,7 @@ if __name__ == '__main__':
                 if ap > best_ap:
                     best_ap = ap
                     print("beat_ap:", ap)
-                need_write = "epoch" + str(epoch) + " best_auc: " + str(best_auc) + " best_ap: " + str(best_ap)
+                need_write = "epoch" + str(epoch) + " best_auc: " + str(best_auc) + " best_ap: " + str(best_ap) + " loss: " + str(loss.item())
                 top = 'top_1+' + str(top_k[0]) + ' top_5+' + str(top_k[1]) + ' top_10+' + str(
                     top_k[2]) + ' top_15+' + str(top_k[3]) + ' top_20+' + str(top_k[4])
 
