@@ -18,6 +18,7 @@ import torch as th
 from torch import nn
 from utils import *
 from torch.nn import init
+import math
 
 
 class Edge_level(nn.Module):
@@ -249,6 +250,17 @@ class HMGNN(nn.Module):
             'poi': nn.TransformerEncoder(encoder_layer, num_layers=1)
         })
         # ---------------------------------
+        
+        # --- 位置编码 ---
+        self.positional_encoding = PositionalEncoding(out_feats * num_heads)
+        # ---------------------------------
+        
+        # --- 融合层（残差连接 + 可学习权重）---
+        self.fusion_layers = nn.ModuleDict({
+            'user': TransformerFusionLayer(out_feats * num_heads),
+            'poi': TransformerFusionLayer(out_feats * num_heads)
+        })
+        # ---------------------------------
 
         self.lin = nn.Linear(out_feats * num_heads, out_feats)
         self.lin2 = nn.Linear(out_feats, out_feats)
@@ -260,16 +272,25 @@ class HMGNN(nn.Module):
         h = {k: F.relu(v) for k, v in h.items()}
         h = self.conv2(graph, h, edge_attr)
         h = {k: v.reshape(v.shape[0], -1) for k, v in h.items()}
-        h = {k: F.relu(v) for k, v in h.items()}
+        h_gnn = {k: F.relu(v) for k, v in h.items()}
         
-        # Apply Transformer Encoder to each node type
-        for ntype, emb in h.items():
+        # 保存原始GNN输出（用于残差连接）
+        h_gnn_original = {k: v.clone() for k, v in h_gnn.items()}
+        
+        # Apply Transformer Encoder with Positional Encoding
+        h_transformer = {}
+        for ntype, emb in h_gnn.items():
             if ntype in self.transformer_encoders:
-                # TransformerEncoder expects [seq_len, batch_size, embedding_dim]
-                # but with batch_first=True, it's [batch_size, seq_len, embedding_dim]
-                # We treat nodes as sequence and batch size as 1
-                h[ntype] = self.transformer_encoders[ntype](emb.unsqueeze(0)).squeeze(0)
-
+                # 添加位置编码
+                emb_with_pos = self.positional_encoding(emb.unsqueeze(0))
+                # 通过Transformer
+                transformer_out = self.transformer_encoders[ntype](emb_with_pos).squeeze(0)
+                # 融合GNN输出和Transformer输出（残差连接 + 可学习权重）
+                h_transformer[ntype] = self.fusion_layers[ntype](h_gnn_original[ntype], transformer_out)
+            else:
+                h_transformer[ntype] = h_gnn_original[ntype]
+        
+        h = h_transformer
         h = {k: self.lin(v) for k, v in h.items()}
         h = {k: self.lin2(v) for k, v in h.items()}
         return h
@@ -310,4 +331,67 @@ class Model(nn.Module):
             i += 1
         h = self.sage(g, feat2, edge_attr_new)
         return self.pred(g, h, etype), self.pred(neg_g, h, etype), h, contrastive_loss(h['user'], g)
+
+
+class PositionalEncoding(nn.Module):
+    """标准的位置编码，使用三角函数实现，支持动态长度"""
+    def __init__(self, d_model, max_len=10000):
+        super(PositionalEncoding, self).__init__()
+        self.d_model = d_model
+        self.max_len = max_len
+        
+        # 预先计算位置编码
+        pe = torch.zeros(max_len, d_model)
+        position = torch.arange(0, max_len, dtype=torch.float).unsqueeze(1)
+        div_term = torch.exp(torch.arange(0, d_model, 2).float() * -(math.log(10000.0) / d_model))
+        pe[:, 0::2] = torch.sin(position * div_term)
+        if d_model % 2 == 1:
+            pe[:, 1::2] = torch.cos(position * div_term[:-1])
+        else:
+            pe[:, 1::2] = torch.cos(position * div_term)
+        self.register_buffer('pe', pe)
+    
+    def forward(self, x):
+        # x: [batch_size, seq_len, d_model] 或 [seq_len, d_model]
+        seq_len = x.size(-2)  # 获取序列长度
+        
+        # 如果序列长度超过预设的最大长度，动态扩展位置编码
+        if seq_len > self.max_len:
+            self._extend_pe(seq_len, x.device)
+        
+        if x.dim() == 2:
+            # [seq_len, d_model]
+            return x + self.pe[:seq_len, :].to(x.device)
+        else:
+            # [batch_size, seq_len, d_model]
+            return x + self.pe[:seq_len, :].unsqueeze(0).to(x.device)
+    
+    def _extend_pe(self, length, device):
+        """动态扩展位置编码缓冲区"""
+        pe = torch.zeros(length, self.d_model, device=device)
+        position = torch.arange(0, length, dtype=torch.float, device=device).unsqueeze(1)
+        div_term = torch.exp(torch.arange(0, self.d_model, 2, device=device).float() * -(math.log(10000.0) / self.d_model))
+        pe[:, 0::2] = torch.sin(position * div_term)
+        if self.d_model % 2 == 1:
+            pe[:, 1::2] = torch.cos(position * div_term[:-1])
+        else:
+            pe[:, 1::2] = torch.cos(position * div_term)
+        self.register_buffer('pe', pe)
+
+
+class TransformerFusionLayer(nn.Module):
+    """融合Transformer输出和GNN输出的层，使用残差连接"""
+    def __init__(self, d_model):
+        super(TransformerFusionLayer, self).__init__()
+        # 可学习的融合权重
+        self.gnn_weight = nn.Parameter(torch.tensor(0.8))
+        self.transformer_weight = nn.Parameter(torch.tensor(0.2))
+        self.layer_norm = nn.LayerNorm(d_model)
+    
+    def forward(self, gnn_out, transformer_out):
+        # 加权融合 + 残差连接
+        fused = self.gnn_weight * gnn_out + self.transformer_weight * transformer_out
+        # 使用LayerNorm稳定训练
+        output = self.layer_norm(gnn_out + fused)
+        return output
 

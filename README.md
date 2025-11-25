@@ -54,3 +54,41 @@ If you find this work helpful, please consider citing our paper:
   doi = {10.1007/s11280-022-01092-5},
 }
 ```
+## 模型改进说明
+
+### 2024年11月 - Transformer模块融合改进
+
+在Transformer编码层的基础上，添加了以下两个关键改进：
+
+#### 1. 位置编码（Positional Encoding）
+- **目的**：帮助模型捕捉节点的顺序信息
+- **实现**：使用标准三角函数位置编码
+  - sin编码：位置偶数维度
+  - cos编码：位置奇数维度
+- **频率公式**：`PE(pos, 2i) = sin(pos / 10000^(2i/d_model))`
+- **应用时机**：在输入Transformer之前添加位置编码
+
+#### 2. 残差连接与融合层（Residual Connection + Fusion Layer）
+- **目的**：有效融合GNN原始输出与Transformer的输出，防止信息损失
+- **实现细节**：
+  - 保存Conv2后的原始GNN输出
+  - 使用可学习的权重参数（gnn_weight和transformer_weight）控制融合比例
+  - 公式：`fused = α * gnn_output + β * transformer_output + gnn_output`
+  - 使用LayerNorm稳定训练过程
+  - 初始权重均设为0.5，训练过程中自动调整
+
+#### 3. 代码结构
+```python
+# 新增类
+- PositionalEncoding: 位置编码层
+- TransformerFusionLayer: 融合层（残差+可学习权重）
+
+# HMGNN类修改
+- __init__: 添加位置编码和融合层初始化
+- forward: 添加位置编码应用和残差融合过程
+```
+
+### 实验建议
+1. 监控训练过程中fusion_layers中的权重参数变化
+2. 比较有/无位置编码的性能差异
+3. 调整融合层的融合策略（可以改为拼接、门控单元等）
