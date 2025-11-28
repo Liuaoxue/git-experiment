@@ -11,6 +11,7 @@ import random
 import tqdm
 import sklearn.metrics
 from torch import cosine_similarity
+import datetime
 from dataset import *
 from model import *
 from utils import *
@@ -27,7 +28,8 @@ K=args.multihead
 lambda_1=args.lambda_1
 lambda_2=args.lambda_2
 lambda_3=args.lambda_3
-file='output/'+str(city)+'_multi_head_'+str(K)+'lambda_1_'+str(lambda_1)+'lambda_2_'+str(lambda_2)+'lambda_3_'+str(lambda_3)+'.txt'
+current_time = datetime.datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
+file='output/'+str(city)+'_multi_head_'+str(K)+'lambda_1_'+str(lambda_1)+'lambda_2_'+str(lambda_2)+'lambda_3_'+str(lambda_3)+'_'+current_time+'.txt'
 print(file)
 if __name__ == '__main__':
 
@@ -35,7 +37,8 @@ if __name__ == '__main__':
     g = g.to(device)
     etype = g.etypes
     rel_names = ['friend', 'visit', 'co_occurrence', 'live_with', 're_live_with', 'class_same', 're_visit']
-    model = Model(d_node, 256, 512, rel_names, K).to(device)
+    num_users = g.num_nodes('user')
+    model = Model(d_node, 256, 512, rel_names, K, num_users=num_users).to(device)
     user_feats = g.nodes['user'].data['u_fe'].to(device)
     poi_feats = g.nodes['poi'].data['p_fe'].to(device)
     node_features = {'user': user_feats, 'poi': poi_feats}
@@ -57,6 +60,12 @@ if __name__ == '__main__':
     best_auc = 0
     best_ap = 0
     print(city)
+    # 初始化文件，确保文件在训练开始前就被创建
+    with open(file, 'w') as f:
+        f.write(f"Training started for {city}\n")
+        f.write(f"Hyperparameters: K={K}, lambda_1={lambda_1}, lambda_2={lambda_2}, lambda_3={lambda_3}\n")
+        f.write(f"Total epochs: {args.epochs}\n")
+        f.write("="*50 + "\n")
     for epoch in range(epoch):
         negative_graph = construct_negative_graph(g, 5, ('user', 'friend', 'user'))
         pos_score, neg_score, node_emb, contrastive_loss = model(g, negative_graph, node_features, edge_attr, ('user', 'friend', 'user'))
@@ -72,21 +81,7 @@ if __name__ == '__main__':
         if epoch % 100 == 0:
             print("epoch:", epoch)
             print("LOSS:", loss.item())
-            test_auc, ap,top_k = test(user_emb,g,friend_list_index_test)
-            if test_auc > best_auc:
-                best_auc = test_auc
-                print("best_auc:", best_auc)
-                np.save("data/save_user_embedding/best_auc_JK" + str(best_auc) + ".npy", user_emb.cpu().detach().numpy())
-            if ap > best_ap:
-                best_ap = ap
-                print("beat_ap:", ap)
-            need_write="epoch"+str(epoch)+" best_auc: "+str(best_auc)+" best_ap: "+str(best_ap)
-            top='top_1+'+str(top_k[0])+' top_5+'+str(top_k[1])+' top_10+'+str(top_k[2])+' top_15+'+str(top_k[3])+' top_20+'+str(top_k[4])
-            with open(file, 'a+') as f:
-                f.write(need_write + '\n')  # 加\n换行显示
-                f.write(top + '\n')
-        if epoch > 3000:
-            if epoch % 10 == 0:
+            try:
                 test_auc, ap,top_k = test(user_emb,g,friend_list_index_test)
                 if test_auc > best_auc:
                     best_auc = test_auc
@@ -95,9 +90,33 @@ if __name__ == '__main__':
                 if ap > best_ap:
                     best_ap = ap
                     print("beat_ap:", ap)
-                need_write = "epoch" + str(epoch) + " best_auc: " + str(best_auc) + " best_ap: " + str(best_ap)
-                top = 'top_1+' + str(top_k[0]) + ' top_5+' + str(top_k[1]) + ' top_10+' + str(
-                    top_k[2]) + ' top_15+' + str(top_k[3]) + ' top_20+' + str(top_k[4])
+                need_write="epoch"+str(epoch)+" best_auc: "+str(best_auc)+" best_ap: "+str(best_ap)+" loss: "+str(loss.item())
+                top='top_1+'+str(top_k[0])+' top_5+'+str(top_k[1])+' top_10+'+str(top_k[2])+' top_15+'+str(top_k[3])+' top_20+'+str(top_k[4])
+            except Exception as e:
+                print(f"Error in test at epoch {epoch}: {e}")
+                need_write="epoch"+str(epoch)+" best_auc: "+str(best_auc)+" best_ap: "+str(best_ap)+" loss: "+str(loss.item())+" [TEST_ERROR]"
+                top="[TEST_ERROR]"
+            with open(file, 'a+') as f:
+                f.write(need_write + '\n')  # 加\n换行显示
+                f.write(top + '\n')
+        if epoch > 3000:
+            if epoch % 10 == 0:
+                try:
+                    test_auc, ap,top_k = test(user_emb,g,friend_list_index_test)
+                    if test_auc > best_auc:
+                        best_auc = test_auc
+                        print("best_auc:", best_auc)
+                        np.save("data/save_user_embedding/best_auc_JK" + str(best_auc) + ".npy", user_emb.cpu().detach().numpy())
+                    if ap > best_ap:
+                        best_ap = ap
+                        print("beat_ap:", ap)
+                    need_write = "epoch" + str(epoch) + " best_auc: " + str(best_auc) + " best_ap: " + str(best_ap) + " loss: " + str(loss.item())
+                    top = 'top_1+' + str(top_k[0]) + ' top_5+' + str(top_k[1]) + ' top_10+' + str(
+                        top_k[2]) + ' top_15+' + str(top_k[3]) + ' top_20+' + str(top_k[4])
+                except Exception as e:
+                    print(f"Error in test at epoch {epoch}: {e}")
+                    need_write = "epoch" + str(epoch) + " best_auc: " + str(best_auc) + " best_ap: " + str(best_ap) + " loss: " + str(loss.item()) + " [TEST_ERROR]"
+                    top = "[TEST_ERROR]"
 
                 with open(file, 'a+') as f:
                     f.write(need_write + '\n')  # 加\n换行显示

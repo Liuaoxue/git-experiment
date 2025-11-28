@@ -170,6 +170,108 @@ class Semantic_level(nn.Module):
         return beta
 
 
+class SparseSelfAttention(nn.Module):
+    def __init__(self, d_model, num_heads, window_size=16, dilation=3, dropout=0.1):
+        super().__init__()
+        self.d_model = d_model
+        self.num_heads = num_heads
+        self.window_size = window_size
+        self.dilation = dilation
+        self.head_dim = d_model // num_heads
+        
+        assert d_model % num_heads == 0, "d_model must be divisible by num_heads"
+
+        self.q_proj = nn.Linear(d_model, d_model)
+        self.k_proj = nn.Linear(d_model, d_model)
+        self.v_proj = nn.Linear(d_model, d_model)
+        
+        self.out_proj = nn.Linear(d_model, d_model)
+        self.dropout = nn.Dropout(dropout)
+        self.scale = self.head_dim ** -0.5
+
+    def _chunk_attention(self, x, chunk_size):
+        # x: [Batch, Seq_Len, D_model]
+        B, L, D = x.shape
+        pad_len = (chunk_size - L % chunk_size) % chunk_size
+        if pad_len > 0:
+            x = F.pad(x, (0, 0, 0, pad_len))
+        
+        L_padded = x.shape[1]
+        num_chunks = L_padded // chunk_size
+        
+        x_reshaped = x.view(B, num_chunks, chunk_size, D)
+        x_features = x_reshaped.view(B * num_chunks, chunk_size, D)
+        
+        q = self.q_proj(x_features).view(B * num_chunks, chunk_size, self.num_heads, self.head_dim).transpose(1, 2)
+        k = self.k_proj(x_features).view(B * num_chunks, chunk_size, self.num_heads, self.head_dim).transpose(1, 2)
+        v = self.v_proj(x_features).view(B * num_chunks, chunk_size, self.num_heads, self.head_dim).transpose(1, 2)
+        
+        attn_weights = (q @ k.transpose(-2, -1)) * self.scale
+        attn_weights = F.softmax(attn_weights, dim=-1)
+        attn_weights = self.dropout(attn_weights)
+        
+        out = (attn_weights @ v).transpose(1, 2).reshape(B * num_chunks, chunk_size, D)
+        out = out.view(B, num_chunks, chunk_size, D).view(B, L_padded, D)
+        
+        if pad_len > 0:
+            out = out[:, :L, :]
+            
+        return out
+
+    def forward(self, x):
+        # 1. Local Attention
+        local_out = self._chunk_attention(x, self.window_size)
+        
+        # 2. Atrous Attention
+        B, L, D = x.shape
+        pad_len = (self.dilation - L % self.dilation) % self.dilation
+        if pad_len > 0:
+            x_pad = F.pad(x, (0, 0, 0, pad_len))
+        else:
+            x_pad = x
+            
+        L_pad = x_pad.shape[1]
+        # Reshape [B, L//r, r, D] -> [B*r, L//r, D]
+        x_view = x_pad.view(B, L_pad // self.dilation, self.dilation, D)
+        x_atrous_in = x_view.permute(0, 2, 1, 3).reshape(B * self.dilation, L_pad // self.dilation, D)
+        
+        atrous_out_temp = self._chunk_attention(x_atrous_in, self.window_size)
+        
+        atrous_out_temp = atrous_out_temp.view(B, self.dilation, L_pad // self.dilation, D).permute(0, 2, 1, 3).reshape(B, L_pad, D)
+        
+        if pad_len > 0:
+            atrous_out = atrous_out_temp[:, :L, :]
+        else:
+            atrous_out = atrous_out_temp
+            
+        output = local_out + atrous_out
+        return self.out_proj(output)
+
+class SparseTransformerBlock(nn.Module):
+    def __init__(self, d_model, num_heads, window_size=16, dilation=4, dim_feedforward=512, dropout=0.1):
+        super().__init__()
+        self.self_attn = SparseSelfAttention(d_model, num_heads, window_size, dilation, dropout)
+        self.norm1 = nn.LayerNorm(d_model)
+        self.dropout1 = nn.Dropout(dropout)
+        
+        self.linear1 = nn.Linear(d_model, dim_feedforward)
+        self.dropout = nn.Dropout(dropout)
+        self.linear2 = nn.Linear(dim_feedforward, d_model)
+        self.norm2 = nn.LayerNorm(d_model)
+        self.dropout2 = nn.Dropout(dropout)
+        self.activation = nn.ReLU()
+
+    def forward(self, src):
+        src2 = self.self_attn(src)
+        src = src + self.dropout1(src2)
+        src = self.norm1(src)
+        
+        src2 = self.linear2(self.dropout(self.activation(self.linear1(src))))
+        src = src + self.dropout2(src2)
+        src = self.norm2(src)
+        return src
+
+
 class HeteroGraph(nn.Module):
     def __init__(self, mods, in_size_sem, num_head):
         super(HeteroGraph, self).__init__()
@@ -228,7 +330,7 @@ class HeteroGraph(nn.Module):
 
 
 class HMGNN(nn.Module):
-    def __init__(self, in_feats, hid_feats, out_feats, rel_names, num_heads):
+    def __init__(self, in_feats, hid_feats, out_feats, rel_names, num_heads, num_users=5000, use_transformer=True):
         super().__init__()
         self.conv1 = HeteroGraph({
             rel: Edge_level(in_feats, hid_feats, num_heads=num_heads, )
@@ -236,6 +338,33 @@ class HMGNN(nn.Module):
         self.conv2 = HeteroGraph({
             rel: Edge_level(hid_feats * num_heads, out_feats, num_heads=num_heads, )
             for rel in rel_names}, in_size_sem=out_feats, num_head=num_heads)
+        
+        self.use_transformer = use_transformer
+        
+        if self.use_transformer:
+            # Sparse Transformer Encoder
+            self.transformer_dim = out_feats * num_heads 
+            self.sparse_transformer = SparseTransformerBlock(
+                d_model=self.transformer_dim, 
+                num_heads=num_heads, 
+                window_size=16,  # 保持合理的窗口大小
+                dilation=3,      # 保持合理的空洞间隔
+                dropout=0.2      # 增加 dropout 防止过拟合
+            )
+            
+            # 使用简单的可学习位置嵌入，而非拉普拉斯 PE
+            # 这对于 transductive setting 更有效
+            self.pos_embed_user = nn.Embedding(num_users, self.transformer_dim)
+            nn.init.normal_(self.pos_embed_user.weight, std=0.02)
+            
+            # 门控融合机制 - 让模型自己决定何时使用 Transformer
+            self.gate_network = nn.Sequential(
+                nn.Linear(self.transformer_dim * 2, self.transformer_dim),
+                nn.ReLU(),
+                nn.Linear(self.transformer_dim, 1),
+                nn.Sigmoid()
+            )
+
         self.lin = nn.Linear(out_feats * num_heads, out_feats)
         self.lin2 = nn.Linear(out_feats, out_feats)
         self.relu = nn.ReLU()
@@ -247,16 +376,52 @@ class HMGNN(nn.Module):
         h = self.conv2(graph, h, edge_attr)
         h = {k: v.reshape(v.shape[0], -1) for k, v in h.items()}
         h = {k: F.relu(v) for k, v in h.items()}
-        h = {k: self.lin(v) for k, v in h.items()}
-        h = {k: self.lin2(v) for k, v in h.items()}
-        return h
+        
+        if self.use_transformer:
+            h_fused = {}
+            
+            # 只对 user 节点应用 Transformer
+            if 'user' in h:
+                h_gnn = h['user']  # [num_users, dim]
+                num_users = h_gnn.shape[0]
+                
+                # 添加可学习的位置嵌入
+                user_ids = torch.arange(num_users, device=h_gnn.device)
+                pos_embed = self.pos_embed_user(user_ids)
+                feat_with_pe = h_gnn + pos_embed
+                
+                # 通过 Transformer
+                feat_with_pe = feat_with_pe.unsqueeze(0)  # [1, num_users, dim]
+                h_transformer = self.sparse_transformer(feat_with_pe)
+                h_transformer = h_transformer.squeeze(0)  # [num_users, dim]
+                
+                # 门控融合: gate 决定每个节点使用多少 Transformer 信息
+                # 拼接 GNN 和 Transformer 特征
+                combined = torch.cat([h_gnn, h_transformer], dim=-1)  # [num_users, 2*dim]
+                gate = self.gate_network(combined)  # [num_users, 1]
+                
+                # 门控融合: h = gate * h_transformer + (1 - gate) * h_gnn
+                # 对于大多数节点，gate 会接近 0（主要用 GNN）
+                # 只有需要全局信息的节点，gate 才会变大
+                h_fused['user'] = gate * h_transformer + (1 - gate) * h_gnn
+            
+            # poi 节点直接使用 GNN 输出
+            if 'poi' in h:
+                h_fused['poi'] = h['poi']
+        else:
+            h_fused = h
+        
+        # 最终的线性投影
+        h_fused = {k: self.lin(v) for k, v in h_fused.items()}
+        h_fused = {k: self.lin2(v) for k, v in h_fused.items()}
+        return h_fused
 
 
 class Model(nn.Module):
-    def __init__(self, in_features, hidden_features, out_features, rel_names, num_heads):
+    def __init__(self, in_features, hidden_features, out_features, rel_names, num_heads, num_users=5000, use_transformer=True):
         super().__init__()
         self.rel_names = rel_names
-        self.sage = HMGNN(in_features, hidden_features, out_features, rel_names, num_heads)
+        self.sage = HMGNN(in_features, hidden_features, out_features, rel_names, num_heads, num_users=num_users, use_transformer=use_transformer)
         self.pred = HeteroDotProductPredictor()
         self.lin = nn.Linear(out_features, out_features)
         self.relu = nn.ReLU()
