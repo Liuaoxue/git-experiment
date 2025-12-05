@@ -27,6 +27,7 @@ if __name__ == '__main__':
     g,friend_list_index_test=data(d_node, 'NYC')
     g = g.to(device)
     user_emb=torch.tensor(np.load("data/save_user_embedding/best_auc_JK0.5088859196776176.npy")).to(device)
-    test_auc, ap, top_k = test(user_emb, g, friend_list_index_test)
+    test_auc, ap, f1, top_k = test(user_emb, g, friend_list_index_test)
     print("test_auc:",test_auc)
     print("test_ap:",ap)
+    print("test_f1:",f1)

@@ -59,6 +59,7 @@ if __name__ == '__main__':
     opt = torch.optim.Adam(model.parameters(), lr=args.lr, weight_decay=0)
     best_auc = 0
     best_ap = 0
+    best_f1 = 0
     print(city)
     # 初始化文件，确保文件在训练开始前就被创建
     with open(file, 'w') as f:
@@ -82,7 +83,7 @@ if __name__ == '__main__':
             print("epoch:", epoch)
             print("LOSS:", loss.item())
             try:
-                test_auc, ap,top_k = test(user_emb,g,friend_list_index_test)
+                test_auc, ap, f1, top_k = test(user_emb,g,friend_list_index_test)
                 if test_auc > best_auc:
                     best_auc = test_auc
                     print("best_auc:", best_auc)
@@ -90,11 +91,14 @@ if __name__ == '__main__':
                 if ap > best_ap:
                     best_ap = ap
                     print("beat_ap:", ap)
-                need_write="epoch"+str(epoch)+" best_auc: "+str(best_auc)+" best_ap: "+str(best_ap)+" loss: "+str(loss.item())
+                if f1 > best_f1:
+                    best_f1 = f1
+                    print("best_f1:", f1)
+                need_write="epoch"+str(epoch)+" best_auc: "+str(best_auc)+" best_ap: "+str(best_ap)+" best_f1: "+str(best_f1)+" loss: "+str(loss.item())
                 top='top_1+'+str(top_k[0])+' top_5+'+str(top_k[1])+' top_10+'+str(top_k[2])+' top_15+'+str(top_k[3])+' top_20+'+str(top_k[4])
             except Exception as e:
                 print(f"Error in test at epoch {epoch}: {e}")
-                need_write="epoch"+str(epoch)+" best_auc: "+str(best_auc)+" best_ap: "+str(best_ap)+" loss: "+str(loss.item())+" [TEST_ERROR]"
+                need_write="epoch"+str(epoch)+" best_auc: "+str(best_auc)+" best_ap: "+str(best_ap)+" best_f1: "+str(best_f1)+" loss: "+str(loss.item())+" [TEST_ERROR]"
                 top="[TEST_ERROR]"
             with open(file, 'a+') as f:
                 f.write(need_write + '\n')  # 加\n换行显示
@@ -102,7 +106,7 @@ if __name__ == '__main__':
         if epoch > 3000:
             if epoch % 10 == 0:
                 try:
-                    test_auc, ap,top_k = test(user_emb,g,friend_list_index_test)
+                    test_auc, ap, f1, top_k = test(user_emb,g,friend_list_index_test)
                     if test_auc > best_auc:
                         best_auc = test_auc
                         print("best_auc:", best_auc)
@@ -110,12 +114,15 @@ if __name__ == '__main__':
                     if ap > best_ap:
                         best_ap = ap
                         print("beat_ap:", ap)
-                    need_write = "epoch" + str(epoch) + " best_auc: " + str(best_auc) + " best_ap: " + str(best_ap) + " loss: " + str(loss.item())
+                    if f1 > best_f1:
+                        best_f1 = f1
+                        print("best_f1:", f1)
+                    need_write = "epoch" + str(epoch) + " best_auc: " + str(best_auc) + " best_ap: " + str(best_ap) + " best_f1: " + str(best_f1) + " loss: " + str(loss.item())
                     top = 'top_1+' + str(top_k[0]) + ' top_5+' + str(top_k[1]) + ' top_10+' + str(
                         top_k[2]) + ' top_15+' + str(top_k[3]) + ' top_20+' + str(top_k[4])
                 except Exception as e:
                     print(f"Error in test at epoch {epoch}: {e}")
-                    need_write = "epoch" + str(epoch) + " best_auc: " + str(best_auc) + " best_ap: " + str(best_ap) + " loss: " + str(loss.item()) + " [TEST_ERROR]"
+                    need_write = "epoch" + str(epoch) + " best_auc: " + str(best_auc) + " best_ap: " + str(best_ap) + " best_f1: " + str(best_f1) + " loss: " + str(loss.item()) + " [TEST_ERROR]"
                     top = "[TEST_ERROR]"
 
                 with open(file, 'a+') as f:

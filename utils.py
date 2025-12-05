@@ -127,8 +127,15 @@ def test(user_emb,g,friend_list_index_test):
         test_preds.append((F.cosine_similarity(user_emb[test_src[i]], user_emb[test_dst[i]], dim=0)))
     auc = sklearn.metrics.roc_auc_score(test_labels.detach().numpy(), torch.tensor(test_preds))
     ap = sklearn.metrics.average_precision_score(test_labels.detach().numpy(), torch.tensor(test_preds))
+    
+    # Calculate F1 Score (using best threshold)
+    precision, recall, _ = sklearn.metrics.precision_recall_curve(test_labels.detach().numpy(), torch.tensor(test_preds))
+    f1_scores = 2 * recall * precision / (recall + precision + 1e-10)
+    f1 = np.max(f1_scores)
+    
     print('Link Prediction AUC:', auc)
     print("average_precision AP:", ap)
+    print("Link Prediction F1:", f1)
 
     #Top-k
     user_emb_norm = torch.norm(user_emb, dim=-1, keepdim=True)
@@ -234,5 +241,5 @@ def test(user_emb,g,friend_list_index_test):
     #         right+=1
     # print("Top ",k,'accuracy score is:', right/len(y_true))
 
-    return auc, ap,top_k
+    return auc, ap, f1, top_k
 
